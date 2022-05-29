@@ -22,18 +22,23 @@ import {
   StrictMode,
   Suspense,
 } from 'react-is';
-import {REACT_SUSPENSE_LIST_TYPE as SuspenseList} from 'shared/ReactSymbols';
+import {
+  REACT_SUSPENSE_LIST_TYPE as SuspenseList,
+  REACT_TRACING_MARKER_TYPE as TracingMarker,
+} from 'shared/ReactSymbols';
 import {
   TREE_OPERATION_ADD,
   TREE_OPERATION_REMOVE,
   TREE_OPERATION_REMOVE_ROOT,
   TREE_OPERATION_REORDER_CHILDREN,
+  TREE_OPERATION_SET_SUBTREE_MODE,
   TREE_OPERATION_UPDATE_ERRORS_OR_WARNINGS,
   TREE_OPERATION_UPDATE_TREE_BASE_DURATION,
 } from './constants';
 import {ElementTypeRoot} from 'react-devtools-shared/src/types';
 import {
   LOCAL_STORAGE_FILTER_PREFERENCES_KEY,
+  LOCAL_STORAGE_OPEN_IN_EDITOR_URL,
   LOCAL_STORAGE_SHOULD_BREAK_ON_CONSOLE_ERRORS,
   LOCAL_STORAGE_SHOULD_PATCH_CONSOLE_KEY,
   LOCAL_STORAGE_SHOW_INLINE_WARNINGS_AND_ERRORS_KEY,
@@ -210,7 +215,9 @@ export function printOperationsArray(operations: Array<number>) {
         if (type === ElementTypeRoot) {
           logs.push(`Add new root node ${id}`);
 
+          i++; // isStrictModeCompliant
           i++; // supportsProfiling
+          i++; // supportsStrictMode
           i++; // hasOwnerMetadata
         } else {
           const parentID = ((operations[i]: any): number);
@@ -246,6 +253,15 @@ export function printOperationsArray(operations: Array<number>) {
         i += 1;
 
         logs.push(`Remove root ${rootID}`);
+        break;
+      }
+      case TREE_OPERATION_SET_SUBTREE_MODE: {
+        const id = operations[i + 1];
+        const mode = operations[i + 1];
+
+        i += 3;
+
+        logs.push(`Mode ${mode} set for subtree with root ${id}`);
         break;
       }
       case TREE_OPERATION_REORDER_CHILDREN: {
@@ -384,6 +400,22 @@ export function setShowInlineWarningsAndErrors(value: boolean): void {
     LOCAL_STORAGE_SHOW_INLINE_WARNINGS_AND_ERRORS_KEY,
     JSON.stringify(value),
   );
+}
+
+export function getDefaultOpenInEditorURL(): string {
+  return typeof process.env.EDITOR_URL === 'string'
+    ? process.env.EDITOR_URL
+    : '';
+}
+
+export function getOpenInEditorURL(): string {
+  try {
+    const raw = localStorageGetItem(LOCAL_STORAGE_OPEN_IN_EDITOR_URL);
+    if (raw != null) {
+      return JSON.parse(raw);
+    }
+  } catch (error) {}
+  return getDefaultOpenInEditorURL();
 }
 
 export function separateDisplayNameAndHOCs(
@@ -655,6 +687,8 @@ export function getDisplayNameForReactElement(
       return 'Suspense';
     case SuspenseList:
       return 'SuspenseList';
+    case TracingMarker:
+      return 'TracingMarker';
     default:
       const {type} = element;
       if (typeof type === 'string') {

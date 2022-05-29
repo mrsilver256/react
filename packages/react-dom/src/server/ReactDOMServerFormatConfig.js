@@ -17,7 +17,10 @@ import {
 
 import {Children} from 'react';
 
-import {enableFilterEmptyStringAttributesDOM} from 'shared/ReactFeatureFlags';
+import {
+  enableFilterEmptyStringAttributesDOM,
+  enableCustomElementPropertySupport,
+} from 'shared/ReactFeatureFlags';
 
 import type {
   Destination,
@@ -27,6 +30,7 @@ import type {
 
 import {
   writeChunk,
+  writeChunkAndReturn,
   stringToChunk,
   stringToPrecomputedChunk,
 } from 'react-server/src/ReactServerStreamConfig';
@@ -64,9 +68,8 @@ export type ResponseState = {
   placeholderPrefix: PrecomputedChunk,
   segmentPrefix: PrecomputedChunk,
   boundaryPrefix: string,
-  opaqueIdentifierPrefix: string,
+  idPrefix: string,
   nextSuspenseID: number,
-  nextOpaqueID: number,
   sentCompleteSegmentFunction: boolean,
   sentCompleteBoundaryFunction: boolean,
   sentClientRenderFunction: boolean, // We allow the legacy renderer to extend this object.
@@ -79,6 +82,26 @@ const endInlineScript = stringToPrecomputedChunk('</script>');
 const startScriptSrc = stringToPrecomputedChunk('<script src="');
 const startModuleSrc = stringToPrecomputedChunk('<script type="module" src="');
 const endAsyncScript = stringToPrecomputedChunk('" async=""></script>');
+
+/**
+ * This escaping function is designed to work with bootstrapScriptContent only.
+ * because we know we are escaping the entire script. We can avoid for instance
+ * escaping html comment string sequences that are valid javascript as well because
+ * if there are no sebsequent <script sequences the html parser will never enter
+ * script data double escaped state (see: https://www.w3.org/TR/html53/syntax.html#script-data-double-escaped-state)
+ *
+ * While untrusted script content should be made safe before using this api it will
+ * ensure that the script cannot be early terminated or never terminated state
+ */
+function escapeBootstrapScriptContent(scriptText) {
+  if (__DEV__) {
+    checkHtmlStringCoercion(scriptText);
+  }
+  return ('' + scriptText).replace(scriptRegex, scriptReplacer);
+}
+const scriptRegex = /(<\/|<)(s)(cript)/gi;
+const scriptReplacer = (match, prefix, s, suffix) =>
+  `${prefix}${s === 's' ? '\\u0073' : '\\u0053'}${suffix}`;
 
 // Allows us to keep track of what we've already written so we can refer back to it.
 export function createResponseState(
@@ -99,7 +122,7 @@ export function createResponseState(
   if (bootstrapScriptContent !== undefined) {
     bootstrapChunks.push(
       inlineScriptWithNonce,
-      stringToChunk(escapeTextForBrowser(bootstrapScriptContent)),
+      stringToChunk(escapeBootstrapScriptContent(bootstrapScriptContent)),
       endInlineScript,
     );
   }
@@ -127,9 +150,8 @@ export function createResponseState(
     placeholderPrefix: stringToPrecomputedChunk(idPrefix + 'P:'),
     segmentPrefix: stringToPrecomputedChunk(idPrefix + 'S:'),
     boundaryPrefix: idPrefix + 'B:',
-    opaqueIdentifierPrefix: idPrefix + 'R:',
+    idPrefix: idPrefix,
     nextSuspenseID: 0,
-    nextOpaqueID: 0,
     sentCompleteSegmentFunction: false,
     sentCompleteBoundaryFunction: false,
     sentClientRenderFunction: false,
@@ -233,22 +255,23 @@ export function assignSuspenseBoundaryID(
   );
 }
 
-export type OpaqueIDType = string;
+export function makeId(
+  responseState: ResponseState,
+  treeId: string,
+  localId: number,
+): string {
+  const idPrefix = responseState.idPrefix;
 
-export function makeServerID(
-  responseState: null | ResponseState,
-): OpaqueIDType {
-  if (responseState === null) {
-    throw new Error(
-      'Invalid hook call. Hooks can only be called inside of the body of a function component.',
-    );
+  let id = ':' + idPrefix + 'R' + treeId;
+
+  // Unless this is the first id at this level, append a number at the end
+  // that represents the position of this useId hook among all the useId
+  // hooks for this fiber.
+  if (localId > 0) {
+    id += 'H' + localId.toString(32);
   }
 
-  // TODO: This is not deterministic since it's created during render.
-  return (
-    responseState.opaqueIdentifierPrefix +
-    (responseState.nextOpaqueID++).toString(36)
-  );
+  return id + ':';
 }
 
 function encodeHTMLTextNode(text: string): string {
@@ -261,13 +284,30 @@ export function pushTextInstance(
   target: Array<Chunk | PrecomputedChunk>,
   text: string,
   responseState: ResponseState,
-): void {
+  textEmbedded: boolean,
+): boolean {
   if (text === '') {
     // Empty text doesn't have a DOM node representation and the hydration is aware of this.
-    return;
+    return textEmbedded;
   }
-  // TODO: Avoid adding a text separator in common cases.
-  target.push(stringToChunk(encodeHTMLTextNode(text)), textSeparator);
+  if (textEmbedded) {
+    target.push(textSeparator);
+  }
+  target.push(stringToChunk(encodeHTMLTextNode(text)));
+  return true;
+}
+
+// Called when Fizz is done with a Segment. Currently the only purpose is to conditionally
+// emit a text separator when we don't know for sure it is safe to omit
+export function pushSegmentFinale(
+  target: Array<Chunk | PrecomputedChunk>,
+  responseState: ResponseState,
+  lastPushedText: boolean,
+  textEmbedded: boolean,
+): void {
+  if (lastPushedText && textEmbedded) {
+    target.push(textSeparator);
+  }
 }
 
 const styleNameCache: Map<string, PrecomputedChunk> = new Map();
@@ -746,7 +786,7 @@ function pushStartOption(
     }
   }
 
-  if (selectedValue !== null) {
+  if (selectedValue != null) {
     let stringValue;
     if (value !== null) {
       if (__DEV__) {
@@ -779,8 +819,13 @@ function pushStartOption(
           break;
         }
       }
-    } else if (selectedValue === stringValue) {
-      target.push(selectedMarkerAttribute);
+    } else {
+      if (__DEV__) {
+        checkAttributeStringCoercion(selectedValue, 'select.value');
+      }
+      if ('' + selectedValue === stringValue) {
+        target.push(selectedMarkerAttribute);
+      }
     }
   } else if (selected) {
     target.push(selectedMarkerAttribute);
@@ -998,7 +1043,17 @@ function pushStartTextArea(
     target.push(leadingNewline);
   }
 
-  return value;
+  // ToString and push directly instead of recurse over children.
+  // We don't really support complex children in the value anyway.
+  // This also currently avoids a trailing comment node which breaks textarea.
+  if (value !== null) {
+    if (__DEV__) {
+      checkAttributeStringCoercion(value, 'value');
+    }
+    target.push(stringToChunk(encodeHTMLTextNode('' + value)));
+  }
+
+  return null;
 }
 
 function pushSelfClosing(
@@ -1116,11 +1171,31 @@ function pushStartCustomElement(
 
   let children = null;
   let innerHTML = null;
-  for (const propKey in props) {
+  for (let propKey in props) {
     if (hasOwnProperty.call(props, propKey)) {
-      const propValue = props[propKey];
+      let propValue = props[propKey];
       if (propValue == null) {
         continue;
+      }
+      if (
+        enableCustomElementPropertySupport &&
+        (typeof propValue === 'function' || typeof propValue === 'object')
+      ) {
+        // It is normal to render functions and objects on custom elements when
+        // client rendering, but when server rendering the output isn't useful,
+        // so skip it.
+        continue;
+      }
+      if (enableCustomElementPropertySupport && propValue === false) {
+        continue;
+      }
+      if (enableCustomElementPropertySupport && propValue === true) {
+        propValue = '';
+      }
+      if (enableCustomElementPropertySupport && propKey === 'className') {
+        // className gets rendered as class on the client, so it should be
+        // rendered as class on the server.
+        propKey = 'class';
       }
       switch (propKey) {
         case 'children':
@@ -1411,11 +1486,14 @@ export function writeCompletedRoot(
   responseState: ResponseState,
 ): boolean {
   const bootstrapChunks = responseState.bootstrapChunks;
-  let result = true;
-  for (let i = 0; i < bootstrapChunks.length; i++) {
-    result = writeChunk(destination, bootstrapChunks[i]);
+  let i = 0;
+  for (; i < bootstrapChunks.length - 1; i++) {
+    writeChunk(destination, bootstrapChunks[i]);
   }
-  return result;
+  if (i < bootstrapChunks.length) {
+    return writeChunkAndReturn(destination, bootstrapChunks[i]);
+  }
+  return true;
 }
 
 // Structural Nodes
@@ -1434,7 +1512,7 @@ export function writePlaceholder(
   writeChunk(destination, responseState.placeholderPrefix);
   const formattedID = stringToChunk(id.toString(16));
   writeChunk(destination, formattedID);
-  return writeChunk(destination, placeholder2);
+  return writeChunkAndReturn(destination, placeholder2);
 }
 
 // Suspense boundaries are encoded as comments.
@@ -1464,7 +1542,7 @@ export function writeStartCompletedSuspenseBoundary(
   destination: Destination,
   responseState: ResponseState,
 ): boolean {
-  return writeChunk(destination, startCompletedSuspenseBoundary);
+  return writeChunkAndReturn(destination, startCompletedSuspenseBoundary);
 }
 export function writeStartPendingSuspenseBoundary(
   destination: Destination,
@@ -1480,31 +1558,31 @@ export function writeStartPendingSuspenseBoundary(
   }
 
   writeChunk(destination, id);
-  return writeChunk(destination, startPendingSuspenseBoundary2);
+  return writeChunkAndReturn(destination, startPendingSuspenseBoundary2);
 }
 export function writeStartClientRenderedSuspenseBoundary(
   destination: Destination,
   responseState: ResponseState,
 ): boolean {
-  return writeChunk(destination, startClientRenderedSuspenseBoundary);
+  return writeChunkAndReturn(destination, startClientRenderedSuspenseBoundary);
 }
 export function writeEndCompletedSuspenseBoundary(
   destination: Destination,
   responseState: ResponseState,
 ): boolean {
-  return writeChunk(destination, endSuspenseBoundary);
+  return writeChunkAndReturn(destination, endSuspenseBoundary);
 }
 export function writeEndPendingSuspenseBoundary(
   destination: Destination,
   responseState: ResponseState,
 ): boolean {
-  return writeChunk(destination, endSuspenseBoundary);
+  return writeChunkAndReturn(destination, endSuspenseBoundary);
 }
 export function writeEndClientRenderedSuspenseBoundary(
   destination: Destination,
   responseState: ResponseState,
 ): boolean {
-  return writeChunk(destination, endSuspenseBoundary);
+  return writeChunkAndReturn(destination, endSuspenseBoundary);
 }
 
 const startSegmentHTML = stringToPrecomputedChunk('<div hidden id="');
@@ -1555,25 +1633,25 @@ export function writeStartSegment(
       writeChunk(destination, startSegmentHTML);
       writeChunk(destination, responseState.segmentPrefix);
       writeChunk(destination, stringToChunk(id.toString(16)));
-      return writeChunk(destination, startSegmentHTML2);
+      return writeChunkAndReturn(destination, startSegmentHTML2);
     }
     case SVG_MODE: {
       writeChunk(destination, startSegmentSVG);
       writeChunk(destination, responseState.segmentPrefix);
       writeChunk(destination, stringToChunk(id.toString(16)));
-      return writeChunk(destination, startSegmentSVG2);
+      return writeChunkAndReturn(destination, startSegmentSVG2);
     }
     case MATHML_MODE: {
       writeChunk(destination, startSegmentMathML);
       writeChunk(destination, responseState.segmentPrefix);
       writeChunk(destination, stringToChunk(id.toString(16)));
-      return writeChunk(destination, startSegmentMathML2);
+      return writeChunkAndReturn(destination, startSegmentMathML2);
     }
     case HTML_TABLE_MODE: {
       writeChunk(destination, startSegmentTable);
       writeChunk(destination, responseState.segmentPrefix);
       writeChunk(destination, stringToChunk(id.toString(16)));
-      return writeChunk(destination, startSegmentTable2);
+      return writeChunkAndReturn(destination, startSegmentTable2);
     }
     // TODO: For the rest of these, there will be extra wrapper nodes that never
     // get deleted from the document. We need to delete the table too as part
@@ -1583,19 +1661,19 @@ export function writeStartSegment(
       writeChunk(destination, startSegmentTableBody);
       writeChunk(destination, responseState.segmentPrefix);
       writeChunk(destination, stringToChunk(id.toString(16)));
-      return writeChunk(destination, startSegmentTableBody2);
+      return writeChunkAndReturn(destination, startSegmentTableBody2);
     }
     case HTML_TABLE_ROW_MODE: {
       writeChunk(destination, startSegmentTableRow);
       writeChunk(destination, responseState.segmentPrefix);
       writeChunk(destination, stringToChunk(id.toString(16)));
-      return writeChunk(destination, startSegmentTableRow2);
+      return writeChunkAndReturn(destination, startSegmentTableRow2);
     }
     case HTML_COLGROUP_MODE: {
       writeChunk(destination, startSegmentColGroup);
       writeChunk(destination, responseState.segmentPrefix);
       writeChunk(destination, stringToChunk(id.toString(16)));
-      return writeChunk(destination, startSegmentColGroup2);
+      return writeChunkAndReturn(destination, startSegmentColGroup2);
     }
     default: {
       throw new Error('Unknown insertion mode. This is a bug in React.');
@@ -1609,25 +1687,25 @@ export function writeEndSegment(
   switch (formatContext.insertionMode) {
     case ROOT_HTML_MODE:
     case HTML_MODE: {
-      return writeChunk(destination, endSegmentHTML);
+      return writeChunkAndReturn(destination, endSegmentHTML);
     }
     case SVG_MODE: {
-      return writeChunk(destination, endSegmentSVG);
+      return writeChunkAndReturn(destination, endSegmentSVG);
     }
     case MATHML_MODE: {
-      return writeChunk(destination, endSegmentMathML);
+      return writeChunkAndReturn(destination, endSegmentMathML);
     }
     case HTML_TABLE_MODE: {
-      return writeChunk(destination, endSegmentTable);
+      return writeChunkAndReturn(destination, endSegmentTable);
     }
     case HTML_TABLE_BODY_MODE: {
-      return writeChunk(destination, endSegmentTableBody);
+      return writeChunkAndReturn(destination, endSegmentTableBody);
     }
     case HTML_TABLE_ROW_MODE: {
-      return writeChunk(destination, endSegmentTableRow);
+      return writeChunkAndReturn(destination, endSegmentTableRow);
     }
     case HTML_COLGROUP_MODE: {
-      return writeChunk(destination, endSegmentColGroup);
+      return writeChunkAndReturn(destination, endSegmentColGroup);
     }
     default: {
       throw new Error('Unknown insertion mode. This is a bug in React.');
@@ -1774,7 +1852,7 @@ export function writeCompletedSegmentInstruction(
   writeChunk(destination, completeSegmentScript2);
   writeChunk(destination, responseState.placeholderPrefix);
   writeChunk(destination, formattedID);
-  return writeChunk(destination, completeSegmentScript3);
+  return writeChunkAndReturn(destination, completeSegmentScript3);
 }
 
 const completeBoundaryScript1Full = stringToPrecomputedChunk(
@@ -1811,7 +1889,7 @@ export function writeCompletedBoundaryInstruction(
   writeChunk(destination, completeBoundaryScript2);
   writeChunk(destination, responseState.segmentPrefix);
   writeChunk(destination, formattedContentID);
-  return writeChunk(destination, completeBoundaryScript3);
+  return writeChunkAndReturn(destination, completeBoundaryScript3);
 }
 
 const clientRenderScript1Full = stringToPrecomputedChunk(
@@ -1842,5 +1920,5 @@ export function writeClientRenderBoundaryInstruction(
   }
 
   writeChunk(destination, boundaryID);
-  return writeChunk(destination, clientRenderScript2);
+  return writeChunkAndReturn(destination, clientRenderScript2);
 }

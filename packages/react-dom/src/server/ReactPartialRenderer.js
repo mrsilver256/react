@@ -21,7 +21,6 @@ import {
   warnAboutDeprecatedLifecycles,
   disableLegacyContext,
   disableModulePatternComponents,
-  enableSuspenseServerRenderer,
   enableScopeAPI,
 } from 'shared/ReactFeatureFlags';
 import {
@@ -80,11 +79,8 @@ import warnValidStyle from '../shared/warnValidStyle';
 import {validateProperties as validateARIAProperties} from '../shared/ReactDOMInvalidARIAHook';
 import {validateProperties as validateInputProperties} from '../shared/ReactDOMNullInputValuePropHook';
 import {validateProperties as validateUnknownProperties} from '../shared/ReactDOMUnknownPropertyHook';
+import assign from 'shared/assign';
 import hasOwnProperty from 'shared/hasOwnProperty';
-
-export type ServerOptions = {
-  identifierPrefix?: string,
-};
 
 // Based on reading the React.Children implementation. TODO: type this somewhere?
 type ReactNode = string | number | ReactElement;
@@ -567,7 +563,7 @@ function resolve(
         }
 
         if (partialState != null) {
-          inst.state = Object.assign({}, inst.state, partialState);
+          inst.state = assign({}, inst.state, partialState);
         }
       }
     } else {
@@ -699,9 +695,9 @@ function resolve(
             if (partialState != null) {
               if (dontMutate) {
                 dontMutate = false;
-                nextState = Object.assign({}, nextState, partialState);
+                nextState = assign({}, nextState, partialState);
               } else {
-                Object.assign(nextState, partialState);
+                assign(nextState, partialState);
               }
             }
           }
@@ -749,7 +745,7 @@ function resolve(
         }
       }
       if (childContext) {
-        context = Object.assign({}, context, childContext);
+        context = assign({}, context, childContext);
       }
     }
   }
@@ -784,14 +780,7 @@ class ReactDOMServerRenderer {
   contextValueStack: Array<any>;
   contextProviderStack: ?Array<ReactProvider<any>>; // DEV-only
 
-  uniqueID: number;
-  identifierPrefix: string;
-
-  constructor(
-    children: mixed,
-    makeStaticMarkup: boolean,
-    options?: ServerOptions,
-  ) {
+  constructor(children: mixed, makeStaticMarkup: boolean) {
     const flatChildren = flattenTopLevelChildren(children);
 
     const topFrame: Frame = {
@@ -819,10 +808,6 @@ class ReactDOMServerRenderer {
     this.contextIndex = -1;
     this.contextStack = [];
     this.contextValueStack = [];
-
-    // useOpaqueIdentifier ID
-    this.uniqueID = 0;
-    this.identifierPrefix = (options && options.identifierPrefix) || '';
 
     if (__DEV__) {
       this.contextProviderStack = [];
@@ -979,21 +964,17 @@ class ReactDOMServerRenderer {
           outBuffer += this.render(child, frame.context, frame.domNamespace);
         } catch (err) {
           if (err != null && typeof err.then === 'function') {
-            if (enableSuspenseServerRenderer) {
-              if (this.suspenseDepth <= 0) {
-                throw new Error(
-                  // TODO: include component name. This is a bit tricky with current factoring.
-                  'A React component suspended while rendering, but no fallback UI was specified.\n' +
-                    '\n' +
-                    'Add a <Suspense fallback=...> component higher in the tree to ' +
-                    'provide a loading indicator or placeholder to display.',
-                );
-              }
-
-              suspended = true;
-            } else {
-              throw new Error('ReactDOMServer does not yet support Suspense.');
+            if (this.suspenseDepth <= 0) {
+              throw new Error(
+                // TODO: include component name. This is a bit tricky with current factoring.
+                'A React component suspended while rendering, but no fallback UI was specified.\n' +
+                  '\n' +
+                  'Add a <Suspense fallback=...> component higher in the tree to ' +
+                  'provide a loading indicator or placeholder to display.',
+              );
             }
+
+            suspended = true;
           } else {
             throw err;
           }
@@ -1111,39 +1092,35 @@ class ReactDOMServerRenderer {
           return '';
         }
         case REACT_SUSPENSE_TYPE: {
-          if (enableSuspenseServerRenderer) {
-            const fallback = ((nextChild: any): ReactElement).props.fallback;
-            const fallbackChildren = toArray(fallback);
-            const nextChildren = toArray(
-              ((nextChild: any): ReactElement).props.children,
-            );
-            const fallbackFrame: Frame = {
-              type: null,
-              domNamespace: parentNamespace,
-              children: fallbackChildren,
-              childIndex: 0,
-              context: context,
-              footer: '<!--/$-->',
-            };
-            const frame: Frame = {
-              fallbackFrame,
-              type: REACT_SUSPENSE_TYPE,
-              domNamespace: parentNamespace,
-              children: nextChildren,
-              childIndex: 0,
-              context: context,
-              footer: '<!--/$-->',
-            };
-            if (__DEV__) {
-              ((frame: any): FrameDev).debugElementStack = [];
-              ((fallbackFrame: any): FrameDev).debugElementStack = [];
-            }
-            this.stack.push(frame);
-            this.suspenseDepth++;
-            return '<!--$-->';
-          } else {
-            throw new Error('ReactDOMServer does not yet support Suspense.');
+          const fallback = ((nextChild: any): ReactElement).props.fallback;
+          const fallbackChildren = toArray(fallback);
+          const nextChildren = toArray(
+            ((nextChild: any): ReactElement).props.children,
+          );
+          const fallbackFrame: Frame = {
+            type: null,
+            domNamespace: parentNamespace,
+            children: fallbackChildren,
+            childIndex: 0,
+            context: context,
+            footer: '<!--/$-->',
+          };
+          const frame: Frame = {
+            fallbackFrame,
+            type: REACT_SUSPENSE_TYPE,
+            domNamespace: parentNamespace,
+            children: nextChildren,
+            childIndex: 0,
+            context: context,
+            footer: '<!--/$-->',
+          };
+          if (__DEV__) {
+            ((frame: any): FrameDev).debugElementStack = [];
+            ((fallbackFrame: any): FrameDev).debugElementStack = [];
           }
+          this.stack.push(frame);
+          this.suspenseDepth++;
+          return '<!--$-->';
         }
         // eslint-disable-next-line-no-fallthrough
         case REACT_SCOPE_TYPE: {
@@ -1207,7 +1184,7 @@ class ReactDOMServerRenderer {
             const nextChildren = [
               React.createElement(
                 elementType.type,
-                Object.assign({ref: element.ref}, element.props),
+                assign({ref: element.ref}, element.props),
               ),
             ];
             const frame: Frame = {
@@ -1306,7 +1283,7 @@ class ReactDOMServerRenderer {
             const nextChildren = [
               React.createElement(
                 result,
-                Object.assign({ref: element.ref}, element.props),
+                assign({ref: element.ref}, element.props),
               ),
             ];
             const frame: Frame = {
@@ -1428,7 +1405,7 @@ class ReactDOMServerRenderer {
         }
       }
 
-      props = Object.assign(
+      props = assign(
         {
           type: undefined,
         },
@@ -1500,7 +1477,7 @@ class ReactDOMServerRenderer {
       if (__DEV__) {
         checkFormFieldValueStringCoercion(initialValue);
       }
-      props = Object.assign({}, props, {
+      props = assign({}, props, {
         value: undefined,
         children: '' + initialValue,
       });
@@ -1546,7 +1523,7 @@ class ReactDOMServerRenderer {
       }
       this.currentSelectValue =
         props.value != null ? props.value : props.defaultValue;
-      props = Object.assign({}, props, {
+      props = assign({}, props, {
         value: undefined,
       });
     } else if (tag === 'option') {
@@ -1592,7 +1569,7 @@ class ReactDOMServerRenderer {
           selected = '' + selectValue === value;
         }
 
-        props = Object.assign(
+        props = assign(
           {
             selected: undefined,
           },

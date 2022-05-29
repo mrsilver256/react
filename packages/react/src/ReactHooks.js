@@ -13,8 +13,8 @@ import type {
   MutableSourceGetSnapshotFn,
   MutableSourceSubscribeFn,
   ReactContext,
+  StartTransitionOptions,
 } from 'shared/ReactTypes';
-import type {OpaqueIDType} from 'react-reconciler/src/ReactFiberHostConfig';
 
 import ReactCurrentDispatcher from './ReactCurrentDispatcher';
 
@@ -159,7 +159,10 @@ export function useDebugValue<T>(
 
 export const emptyObject = {};
 
-export function useTransition(): [boolean, (() => void) => void] {
+export function useTransition(): [
+  boolean,
+  (callback: () => void, options?: StartTransitionOptions) => void,
+] {
   const dispatcher = resolveDispatcher();
   return dispatcher.useTransition();
 }
@@ -169,9 +172,9 @@ export function useDeferredValue<T>(value: T): T {
   return dispatcher.useDeferredValue(value);
 }
 
-export function useOpaqueIdentifier(): OpaqueIDType | void {
+export function useId(): string {
   const dispatcher = resolveDispatcher();
-  return dispatcher.useOpaqueIdentifier();
+  return dispatcher.useId();
 }
 
 export function useMutableSource<Source, Snapshot>(

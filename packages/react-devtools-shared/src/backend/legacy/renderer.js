@@ -386,7 +386,9 @@ export function attach(
       pushOperation(TREE_OPERATION_ADD);
       pushOperation(id);
       pushOperation(ElementTypeRoot);
-      pushOperation(0); // isProfilingSupported?
+      pushOperation(0); // StrictMode compliant?
+      pushOperation(0); // Profiling flag
+      pushOperation(0); // StrictMode supported?
       pushOperation(hasOwnerMetadata ? 1 : 0);
     } else {
       const type = getElementType(internalInstance);
@@ -838,6 +840,10 @@ export function attach(
       rootType: null,
       rendererPackageName: null,
       rendererVersion: null,
+
+      plugins: {
+        stylex: null,
+      },
     };
   }
 

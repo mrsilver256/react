@@ -1,7 +1,8 @@
 /* global chrome */
 
 import {createElement} from 'react';
-import {createRoot, flushSync} from 'react-dom';
+import {flushSync} from 'react-dom';
+import {createRoot} from 'react-dom/client';
 import Bridge from 'react-devtools-shared/src/bridge';
 import Store from 'react-devtools-shared/src/devtools/store';
 import {getBrowserName, getBrowserTheme} from './utils';
@@ -152,11 +153,13 @@ function createPanelIfReactLoaded() {
           isProfiling,
           supportsReloadAndProfile: isChrome || isEdge,
           supportsProfiling,
-          // At this time, the scheduling profiler can only parse Chrome performance profiles.
-          supportsSchedulingProfiler: isChrome,
+          // At this time, the timeline can only parse Chrome performance profiles.
+          supportsTimeline: isChrome,
           supportsTraceUpdates: true,
         });
-        store.profilerStore.profilingData = profilingData;
+        if (!isProfiling) {
+          store.profilerStore.profilingData = profilingData;
+        }
 
         // Initialize the backend only once the Store has been initialized.
         // Otherwise the Store may miss important initial tree op codes.

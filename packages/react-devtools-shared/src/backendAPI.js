@@ -10,7 +10,7 @@
 import {hydrate, fillInPath} from 'react-devtools-shared/src/hydration';
 import {separateDisplayNameAndHOCs} from 'react-devtools-shared/src/utils';
 import Store from 'react-devtools-shared/src/devtools/store';
-import TimeoutError from 'react-devtools-shared/src/TimeoutError';
+import TimeoutError from 'react-devtools-shared/src/errors/TimeoutError';
 
 import type {
   InspectedElement as InspectedElementBackend,
@@ -208,6 +208,7 @@ export function convertInspectedElementBackendToFrontend(
     owners,
     context,
     hooks,
+    plugins,
     props,
     rendererPackageName,
     rendererVersion,
@@ -233,6 +234,7 @@ export function convertInspectedElementBackendToFrontend(
     hasLegacyContext,
     id,
     key,
+    plugins,
     rendererPackageName,
     rendererVersion,
     rootType,

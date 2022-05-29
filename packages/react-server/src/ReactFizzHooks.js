@@ -14,13 +14,16 @@ import type {
   MutableSourceGetSnapshotFn,
   MutableSourceSubscribeFn,
   ReactContext,
+  StartTransitionOptions,
 } from 'shared/ReactTypes';
 
-import type {ResponseState, OpaqueIDType} from './ReactServerFormatConfig';
+import type {ResponseState} from './ReactServerFormatConfig';
+import type {Task} from './ReactFizzServer';
 
 import {readContext as readContextImpl} from './ReactFizzNewContext';
+import {getTreeId} from './ReactFizzTreeContext';
 
-import {makeServerID} from './ReactServerFormatConfig';
+import {makeId} from './ReactServerFormatConfig';
 
 import {enableCache} from 'shared/ReactFeatureFlags';
 import is from 'shared/objectIs';
@@ -45,12 +48,15 @@ type Hook = {|
 |};
 
 let currentlyRenderingComponent: Object | null = null;
+let currentlyRenderingTask: Task | null = null;
 let firstWorkInProgressHook: Hook | null = null;
 let workInProgressHook: Hook | null = null;
 // Whether the work-in-progress hook is a re-rendered hook
 let isReRender: boolean = false;
 // Whether an update was scheduled during the currently executing render pass.
 let didScheduleRenderPhaseUpdate: boolean = false;
+// Counts the number of useId hooks in this component
+let localIdCounter: number = 0;
 // Lazily created map of render-phase updates
 let renderPhaseUpdates: Map<UpdateQueue<any>, Update<any>> | null = null;
 // Counter to prevent infinite loops.
@@ -163,18 +169,22 @@ function createWorkInProgressHook(): Hook {
   return workInProgressHook;
 }
 
-export function prepareToUseHooks(componentIdentity: Object): void {
+export function prepareToUseHooks(task: Task, componentIdentity: Object): void {
   currentlyRenderingComponent = componentIdentity;
+  currentlyRenderingTask = task;
   if (__DEV__) {
     isInHookUserCodeInDev = false;
   }
 
   // The following should have already been reset
   // didScheduleRenderPhaseUpdate = false;
+  // localIdCounter = 0;
   // firstWorkInProgressHook = null;
   // numberOfReRenders = 0;
   // renderPhaseUpdates = null;
   // workInProgressHook = null;
+
+  localIdCounter = 0;
 }
 
 export function finishHooks(
@@ -192,6 +202,7 @@ export function finishHooks(
     // work-in-progress hooks and applying the additional updates on top. Keep
     // restarting until no more updates are scheduled.
     didScheduleRenderPhaseUpdate = false;
+    localIdCounter = 0;
     numberOfReRenders += 1;
 
     // Start over from the beginning of the list
@@ -203,6 +214,14 @@ export function finishHooks(
   return children;
 }
 
+export function checkDidRenderIdHook() {
+  // This should be called immediately after every finishHooks call.
+  // Conceptually, it's part of the return value of finishHooks; it's only a
+  // separate function to avoid using an array tuple.
+  const didRenderIdHook = localIdCounter !== 0;
+  return didRenderIdHook;
+}
+
 // Reset the internal hooks state if an error occurs while rendering a component
 export function resetHooksState(): void {
   if (__DEV__) {
@@ -210,6 +229,7 @@ export function resetHooksState(): void {
   }
 
   currentlyRenderingComponent = null;
+  currentlyRenderingTask = null;
   didScheduleRenderPhaseUpdate = false;
   firstWorkInProgressHook = null;
   numberOfReRenders = 0;
@@ -486,13 +506,27 @@ function unsupportedStartTransition() {
   throw new Error('startTransition cannot be called during server rendering.');
 }
 
-function useTransition(): [boolean, (callback: () => void) => void] {
+function useTransition(): [
+  boolean,
+  (callback: () => void, options?: StartTransitionOptions) => void,
+] {
   resolveCurrentlyRenderingComponent();
   return [false, unsupportedStartTransition];
 }
 
-function useOpaqueIdentifier(): OpaqueIDType {
-  return makeServerID(currentResponseState);
+function useId(): string {
+  const task: Task = (currentlyRenderingTask: any);
+  const treeId = getTreeId(task.treeContext);
+
+  const responseState = currentResponseState;
+  if (responseState === null) {
+    throw new Error(
+      'Invalid hook call. Hooks can only be called inside of the body of a function component.',
+    );
+  }
+
+  const localId = localIdCounter++;
+  return makeId(responseState, treeId, localId);
 }
 
 function unsupportedRefresh() {
@@ -523,7 +557,7 @@ export const Dispatcher: DispatcherType = {
   useDebugValue: noop,
   useDeferredValue,
   useTransition,
-  useOpaqueIdentifier,
+  useId,
   // Subscriptions are not setup in a server environment.
   useMutableSource,
   useSyncExternalStore,

@@ -239,6 +239,53 @@ describe('ReactCache', () => {
   });
 
   // @gate experimental || www
+  test('multiple new Cache boundaries in the same mount share the same, fresh root cache', async () => {
+    function App() {
+      return (
+        <>
+          <Cache>
+            <Suspense fallback={<Text text="Loading..." />}>
+              <AsyncText text="A" />
+            </Suspense>
+          </Cache>
+          <Cache>
+            <Suspense fallback={<Text text="Loading..." />}>
+              <AsyncText text="A" />
+            </Suspense>
+          </Cache>
+        </>
+      );
+    }
+
+    const root = ReactNoop.createRoot();
+    await act(async () => {
+      root.render(<App showMore={false} />);
+    });
+
+    // Even though there are two new <Cache /> trees, they should share the same
+    // data cache. So there should be only a single cache miss for A.
+    expect(Scheduler).toHaveYielded([
+      'Cache miss! [A]',
+      'Loading...',
+      'Loading...',
+    ]);
+    expect(root).toMatchRenderedOutput('Loading...Loading...');
+
+    await act(async () => {
+      resolveMostRecentTextCache('A');
+    });
+    expect(Scheduler).toHaveYielded(['A', 'A']);
+    expect(root).toMatchRenderedOutput('AA');
+
+    await act(async () => {
+      root.render('Bye');
+    });
+    // no cleanup: cache is still retained at the root
+    expect(Scheduler).toHaveYielded([]);
+    expect(root).toMatchRenderedOutput('Bye');
+  });
+
+  // @gate experimental || www
   test('multiple new Cache boundaries in the same update share the same, fresh cache', async () => {
     function App({showMore}) {
       return showMore ? (
@@ -739,14 +786,21 @@ describe('ReactCache', () => {
     await act(async () => {
       refresh();
     });
-    expect(Scheduler).toHaveYielded(['Cache miss! [A]', 'Loading...']);
+    expect(Scheduler).toHaveYielded([
+      'Cache miss! [A]',
+      'Loading...',
+      // The v1 cache can be cleaned up since everything that references it has
+      // been replaced by a fallback. When the boundary switches back to visible
+      // it will use the v2 cache.
+      'Cache cleanup: A [v1]',
+    ]);
     expect(root).toMatchRenderedOutput('Loading...');
 
     await act(async () => {
       resolveMostRecentTextCache('A');
     });
     // Note that the version has updated, and the previous cache is cleared
-    expect(Scheduler).toHaveYielded(['A [v2]', 'Cache cleanup: A [v1]']);
+    expect(Scheduler).toHaveYielded(['A [v2]']);
     expect(root).toMatchRenderedOutput('A [v2]');
 
     await act(async () => {
@@ -1132,7 +1186,7 @@ describe('ReactCache', () => {
 
     // Unmount children: the first text cache instance is created only after the root
     // commits, so both fresh cache instances are released by their cache boundaries,
-    // cleaning up v1 (used for the first two children which render togeether) and
+    // cleaning up v1 (used for the first two children which render together) and
     // v2 (used for the third boundary added later).
     await act(async () => {
       root.render('Bye!');

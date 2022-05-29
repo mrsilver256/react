@@ -72,7 +72,9 @@ describe('ReactFiberHostContext', () => {
     const container = Renderer.createContainer(
       /* root: */ null,
       ConcurrentRoot,
+      null,
       false,
+      '',
       null,
     );
     act(() => {
@@ -133,7 +135,9 @@ describe('ReactFiberHostContext', () => {
     const container = Renderer.createContainer(
       rootContext,
       ConcurrentRoot,
+      null,
       false,
+      '',
       null,
     );
     act(() => {

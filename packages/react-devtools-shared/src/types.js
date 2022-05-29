@@ -32,11 +32,12 @@ export const ElementTypeProfiler = 10;
 export const ElementTypeRoot = 11;
 export const ElementTypeSuspense = 12;
 export const ElementTypeSuspenseList = 13;
+export const ElementTypeTracingMarker = 14;
 
 // Different types of elements displayed in the Elements tree.
 // These types may be used to visually distinguish types,
 // or to enable/disable certain functionality.
-export type ElementType = 1 | 2 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13;
+export type ElementType = 1 | 2 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14;
 
 // WARNING
 // The values below are referenced by ComponentFilters (which are saved via localStorage).
@@ -85,9 +86,20 @@ export type HookSourceLocationKey = string;
 export type HookNames = Map<HookSourceLocationKey, HookName>;
 
 export type LRUCache<K, V> = {|
+  del: (key: K) => void,
   get: (key: K) => V,
   has: (key: K) => boolean,
-  remove: (key: K) => void,
   reset: () => void,
   set: (key: K, value: V) => void,
 |};
+
+export type StyleXPlugin = {|
+  sources: Array<string>,
+  resolvedStyles: Object,
+|};
+
+export type Plugins = {|
+  stylex: StyleXPlugin | null,
+|};
+
+export const StrictMode = 1;

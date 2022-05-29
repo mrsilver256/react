@@ -35,9 +35,9 @@ import {get as getInstance, set as setInstance} from 'shared/ReactInstanceMap';
 import shallowEqual from 'shared/shallowEqual';
 import getComponentNameFromFiber from 'react-reconciler/src/getComponentNameFromFiber';
 import getComponentNameFromType from 'shared/getComponentNameFromType';
+import assign from 'shared/assign';
 import isArray from 'shared/isArray';
 import {REACT_CONTEXT_TYPE, REACT_PROVIDER_TYPE} from 'shared/ReactSymbols';
-import {setIsStrictModeForDevtools} from './ReactFiberDevToolsHook.new';
 
 import {resolveDefaultProps} from './ReactFiberLazyComponent.new';
 import {
@@ -74,11 +74,11 @@ import {
   scheduleUpdateOnFiber,
 } from './ReactFiberWorkLoop.new';
 import {logForceUpdateScheduled, logStateUpdateScheduled} from './DebugTracing';
-
 import {
   markForceUpdateScheduled,
   markStateUpdateScheduled,
-} from './SchedulingProfiler';
+  setIsStrictModeForDevtools,
+} from './ReactFiberDevToolsHook.new';
 
 const fakeInternalInstance = {};
 
@@ -187,7 +187,7 @@ function applyDerivedStateFromProps(
   const memoizedState =
     partialState === null || partialState === undefined
       ? prevState
-      : Object.assign({}, prevState, partialState);
+      : assign({}, prevState, partialState);
   workInProgress.memoizedState = memoizedState;
 
   // Once the update queue is empty, persist the derived state onto the

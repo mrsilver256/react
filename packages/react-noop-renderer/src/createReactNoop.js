@@ -14,9 +14,12 @@
  * environment.
  */
 
-import type {Fiber} from 'react-reconciler/src/ReactInternalTypes';
+import type {
+  Fiber,
+  TransitionTracingCallbacks,
+} from 'react-reconciler/src/ReactInternalTypes';
 import type {UpdateQueue} from 'react-reconciler/src/ReactUpdateQueue';
-import type {ReactNodeList, OffscreenMode} from 'shared/ReactTypes';
+import type {ReactNodeList} from 'shared/ReactTypes';
 import type {RootTag} from 'react-reconciler/src/ReactRootTags';
 
 import * as Scheduler from 'scheduler/unstable_mock';
@@ -64,6 +67,10 @@ type TextInstance = {|
   context: HostContext,
 |};
 type HostContext = Object;
+type CreateRootOptions = {
+  transitionCallbacks?: TransitionTracingCallbacks,
+  ...
+};
 
 const NO_CONTEXT = {};
 const UPPERCASE_CONTEXT = {};
@@ -466,6 +473,10 @@ function createReactNoop(reconciler: Function, useMutation: boolean) {
     },
 
     detachDeletedInstance() {},
+
+    logRecoverableError() {
+      // no-op
+    },
   };
 
   const hostConfig = useMutation
@@ -584,20 +595,6 @@ function createReactNoop(reconciler: Function, useMutation: boolean) {
           container.children = newChildren;
         },
 
-        getOffscreenContainerType(): string {
-          return 'offscreen';
-        },
-
-        getOffscreenContainerProps(
-          mode: OffscreenMode,
-          children: ReactNodeList,
-        ): Props {
-          return {
-            hidden: mode === 'hidden',
-            children,
-          };
-        },
-
         cloneHiddenInstance(
           instance: Instance,
           type: string,
@@ -710,9 +707,7 @@ function createReactNoop(reconciler: Function, useMutation: boolean) {
 
   function getChildren(root) {
     if (root) {
-      return useMutation
-        ? root.children
-        : removeOffscreenContainersFromChildren(root.children, false);
+      return root.children;
     } else {
       return null;
     }
@@ -720,167 +715,10 @@ function createReactNoop(reconciler: Function, useMutation: boolean) {
 
   function getPendingChildren(root) {
     if (root) {
-      return useMutation
-        ? root.children
-        : removeOffscreenContainersFromChildren(root.pendingChildren, false);
+      return root.children;
     } else {
       return null;
     }
-  }
-
-  function removeOffscreenContainersFromChildren(children, hideNearestNode) {
-    // Mutation mode and persistent mode have different outputs for Offscreen
-    // and Suspense trees. Persistent mode adds an additional host node wrapper,
-    // whereas mutation mode does not.
-    //
-    // This function removes the offscreen host wrappers so that the output is
-    // consistent. If the offscreen node is hidden, it transfers the hiddenness
-    // to the child nodes, to mimic how it works in mutation mode. That way our
-    // tests don't have to fork tree assertions.
-    //
-    // So, it takes a tree that looks like this:
-    //
-    //    <offscreen hidden={true}>
-    //      <span>A</span>
-    //      <span>B</span>
-    //    </offscren>
-    //
-    // And turns it into this:
-    //
-    //   <span hidden={true}>A</span>
-    //   <span hidden={true}>B</span>
-    //
-    // We don't mutate the original tree, but instead return a copy.
-    //
-    // This function is only used by our test assertions, via the `getChildren`
-    // and `getChildrenAsJSX` methods.
-    let didClone = false;
-    const newChildren = [];
-    for (let i = 0; i < children.length; i++) {
-      const child = children[i];
-      const innerChildren = child.children;
-      if (innerChildren !== undefined) {
-        // This is a host instance instance
-        const instance: Instance = (child: any);
-        if (instance.type === 'offscreen') {
-          // This is an offscreen wrapper instance. Remove it from the tree
-          // and recursively return its children, as if it were a fragment.
-          didClone = true;
-          if (instance.text !== null) {
-            // If this offscreen tree contains only text, we replace it with
-            // a text child. Related to `shouldReplaceTextContent` feature.
-            const offscreenTextInstance: TextInstance = {
-              text: instance.text,
-              id: instanceCounter++,
-              parent: instance.parent,
-              hidden: hideNearestNode || instance.hidden,
-              context: instance.context,
-            };
-            // Hide from unit tests
-            Object.defineProperty(offscreenTextInstance, 'id', {
-              value: offscreenTextInstance.id,
-              enumerable: false,
-            });
-            Object.defineProperty(offscreenTextInstance, 'parent', {
-              value: offscreenTextInstance.parent,
-              enumerable: false,
-            });
-            Object.defineProperty(offscreenTextInstance, 'context', {
-              value: offscreenTextInstance.context,
-              enumerable: false,
-            });
-            newChildren.push(offscreenTextInstance);
-          } else {
-            // Skip the offscreen node and replace it with its children
-            const offscreenChildren = removeOffscreenContainersFromChildren(
-              innerChildren,
-              hideNearestNode || instance.hidden,
-            );
-            newChildren.push.apply(newChildren, offscreenChildren);
-          }
-        } else {
-          // This is a regular (non-offscreen) instance. If the nearest
-          // offscreen boundary is hidden, hide this node.
-          const hidden = hideNearestNode ? true : instance.hidden;
-          const clonedChildren = removeOffscreenContainersFromChildren(
-            instance.children,
-            // We never need to hide the children of this node, since if we're
-            // inside a hidden tree, then the hidden style will be applied to
-            // this node.
-            false,
-          );
-          if (
-            clonedChildren === instance.children &&
-            hidden === instance.hidden
-          ) {
-            // No changes. Reuse the original instance without cloning.
-            newChildren.push(instance);
-          } else {
-            didClone = true;
-            const clone: Instance = {
-              id: instance.id,
-              type: instance.type,
-              parent: instance.parent,
-              children: clonedChildren,
-              text: instance.text,
-              prop: instance.prop,
-              hidden: hideNearestNode ? true : instance.hidden,
-              context: instance.context,
-            };
-            Object.defineProperty(clone, 'id', {
-              value: clone.id,
-              enumerable: false,
-            });
-            Object.defineProperty(clone, 'parent', {
-              value: clone.parent,
-              enumerable: false,
-            });
-            Object.defineProperty(clone, 'text', {
-              value: clone.text,
-              enumerable: false,
-            });
-            Object.defineProperty(clone, 'context', {
-              value: clone.context,
-              enumerable: false,
-            });
-            newChildren.push(clone);
-          }
-        }
-      } else {
-        // This is a text instance
-        const textInstance: TextInstance = (child: any);
-        if (hideNearestNode) {
-          didClone = true;
-          const clone = {
-            text: textInstance.text,
-            id: textInstance.id,
-            parent: textInstance.parent,
-            hidden: textInstance.hidden || hideNearestNode,
-            context: textInstance.context,
-          };
-          Object.defineProperty(clone, 'id', {
-            value: clone.id,
-            enumerable: false,
-          });
-          Object.defineProperty(clone, 'parent', {
-            value: clone.parent,
-            enumerable: false,
-          });
-          Object.defineProperty(clone, 'context', {
-            value: clone.context,
-            enumerable: false,
-          });
-
-          newChildren.push(clone);
-        } else {
-          newChildren.push(textInstance);
-        }
-      }
-    }
-    // There are some tests that assume reference equality, so preserve it
-    // when possible. Alternatively, we could update the tests to compare the
-    // ids instead.
-    return didClone ? newChildren : children;
   }
 
   function getChildrenAsJSX(root) {
@@ -934,6 +772,12 @@ function createReactNoop(reconciler: Function, useMutation: boolean) {
     return NoopRenderer.flushSync(fn);
   }
 
+  function onRecoverableError(error) {
+    // TODO: Turn this on once tests are fixed
+    // eslint-disable-next-line react-internal/no-production-logging, react-internal/warning-args
+    // console.error(error);
+  }
+
   let idCounter = 0;
 
   const ReactNoop = {
@@ -954,14 +798,22 @@ function createReactNoop(reconciler: Function, useMutation: boolean) {
       if (!root) {
         const container = {rootID: rootID, pendingChildren: [], children: []};
         rootContainers.set(rootID, container);
-        root = NoopRenderer.createContainer(container, tag, false, null, null);
+        root = NoopRenderer.createContainer(
+          container,
+          tag,
+          null,
+          null,
+          false,
+          '',
+          onRecoverableError,
+        );
         roots.set(rootID, root);
       }
       return root.current.stateNode.containerInfo;
     },
 
     // TODO: Replace ReactNoop.render with createRoot + root.render
-    createRoot() {
+    createRoot(options?: CreateRootOptions) {
       const container = {
         rootID: '' + idCounter++,
         pendingChildren: [],
@@ -970,9 +822,14 @@ function createReactNoop(reconciler: Function, useMutation: boolean) {
       const fiberRoot = NoopRenderer.createContainer(
         container,
         ConcurrentRoot,
+        null,
+        null,
         false,
-        null,
-        null,
+        '',
+        onRecoverableError,
+        options && options.transitionCallbacks
+          ? options.transitionCallbacks
+          : null,
       );
       return {
         _Scheduler: Scheduler,
@@ -997,9 +854,11 @@ function createReactNoop(reconciler: Function, useMutation: boolean) {
       const fiberRoot = NoopRenderer.createContainer(
         container,
         LegacyRoot,
+        null,
+        null,
         false,
-        null,
-        null,
+        '',
+        onRecoverableError,
       );
       return {
         _Scheduler: Scheduler,

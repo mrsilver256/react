@@ -12,6 +12,7 @@ import type {FormatContext} from './ReactDOMServerFormatConfig';
 import {
   createResponseState as createResponseStateImpl,
   pushTextInstance as pushTextInstanceImpl,
+  pushSegmentFinale as pushSegmentFinaleImpl,
   writeStartCompletedSuspenseBoundary as writeStartCompletedSuspenseBoundaryImpl,
   writeStartClientRenderedSuspenseBoundary as writeStartClientRenderedSuspenseBoundaryImpl,
   writeEndCompletedSuspenseBoundary as writeEndCompletedSuspenseBoundaryImpl,
@@ -34,9 +35,8 @@ export type ResponseState = {
   placeholderPrefix: PrecomputedChunk,
   segmentPrefix: PrecomputedChunk,
   boundaryPrefix: string,
-  opaqueIdentifierPrefix: string,
+  idPrefix: string,
   nextSuspenseID: number,
-  nextOpaqueID: number,
   sentCompleteSegmentFunction: boolean,
   sentCompleteBoundaryFunction: boolean,
   sentClientRenderFunction: boolean,
@@ -56,9 +56,8 @@ export function createResponseState(
     placeholderPrefix: responseState.placeholderPrefix,
     segmentPrefix: responseState.segmentPrefix,
     boundaryPrefix: responseState.boundaryPrefix,
-    opaqueIdentifierPrefix: responseState.opaqueIdentifierPrefix,
+    idPrefix: responseState.idPrefix,
     nextSuspenseID: responseState.nextSuspenseID,
-    nextOpaqueID: responseState.nextOpaqueID,
     sentCompleteSegmentFunction: responseState.sentCompleteSegmentFunction,
     sentCompleteBoundaryFunction: responseState.sentCompleteBoundaryFunction,
     sentClientRenderFunction: responseState.sentClientRenderFunction,
@@ -77,14 +76,13 @@ export function createRootFormatContext(): FormatContext {
 export type {
   FormatContext,
   SuspenseBoundaryID,
-  OpaqueIDType,
 } from './ReactDOMServerFormatConfig';
 
 export {
   getChildFormatContext,
   UNINITIALIZED_SUSPENSE_BOUNDARY_ID,
   assignSuspenseBoundaryID,
-  makeServerID,
+  makeId,
   pushStartInstance,
   pushEndInstance,
   pushStartCompletedSuspenseBoundary,
@@ -108,11 +106,31 @@ export function pushTextInstance(
   target: Array<Chunk | PrecomputedChunk>,
   text: string,
   responseState: ResponseState,
-): void {
+  textEmbedded: boolean,
+): boolean {
   if (responseState.generateStaticMarkup) {
     target.push(stringToChunk(escapeTextForBrowser(text)));
+    return false;
   } else {
-    pushTextInstanceImpl(target, text, responseState);
+    return pushTextInstanceImpl(target, text, responseState, textEmbedded);
+  }
+}
+
+export function pushSegmentFinale(
+  target: Array<Chunk | PrecomputedChunk>,
+  responseState: ResponseState,
+  lastPushedText: boolean,
+  textEmbedded: boolean,
+): void {
+  if (responseState.generateStaticMarkup) {
+    return;
+  } else {
+    return pushSegmentFinaleImpl(
+      target,
+      responseState,
+      lastPushedText,
+      textEmbedded,
+    );
   }
 }
 

@@ -437,6 +437,12 @@ function propsMatch(props: Object, filter: Object): boolean {
   return true;
 }
 
+function onRecoverableError(error) {
+  // TODO: Expose onRecoverableError option to userspace
+  // eslint-disable-next-line react-internal/no-production-logging, react-internal/warning-args
+  console.error(error);
+}
+
 function create(element: React$Element<any>, options: TestRendererOptions) {
   let createNodeMock = defaultTestOptions.createNodeMock;
   let isConcurrent = false;
@@ -467,10 +473,12 @@ function create(element: React$Element<any>, options: TestRendererOptions) {
   let root: FiberRoot | null = createContainer(
     container,
     isConcurrent ? ConcurrentRoot : LegacyRoot,
-    false,
     null,
     isStrictMode,
     concurrentUpdatesByDefault,
+    '',
+    onRecoverableError,
+    null,
   );
 
   if (root == null) {

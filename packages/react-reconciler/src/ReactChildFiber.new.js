@@ -13,7 +13,7 @@ import type {Fiber} from './ReactInternalTypes';
 import type {Lanes} from './ReactFiberLane.new';
 
 import getComponentNameFromFiber from 'react-reconciler/src/getComponentNameFromFiber';
-import {Placement, ChildDeletion} from './ReactFiberFlags';
+import {Placement, ChildDeletion, Forked} from './ReactFiberFlags';
 import {
   getIteratorFn,
   REACT_ELEMENT_TYPE,
@@ -23,10 +23,7 @@ import {
 } from 'shared/ReactSymbols';
 import {ClassComponent, HostText, HostPortal, Fragment} from './ReactWorkTags';
 import isArray from 'shared/isArray';
-import {
-  warnAboutStringRefs,
-  enableLazyElements,
-} from 'shared/ReactFeatureFlags';
+import {warnAboutStringRefs} from 'shared/ReactFeatureFlags';
 import {checkPropStringCoercion} from 'shared/CheckStringCoercion';
 
 import {
@@ -40,6 +37,8 @@ import {
 import {emptyRefsObject} from './ReactFiberClassComponent.new';
 import {isCompatibleFamilyForHotReloading} from './ReactFiberHotReloading.new';
 import {StrictLegacyMode} from './ReactTypeOfMode';
+import {getIsHydrating} from './ReactFiberHydrationContext.new';
+import {pushTreeFork} from './ReactFiberTreeContext.new';
 
 let didWarnAboutMaps;
 let didWarnAboutGenerators;
@@ -334,7 +333,9 @@ function ChildReconciler(shouldTrackSideEffects) {
   ): number {
     newFiber.index = newIndex;
     if (!shouldTrackSideEffects) {
-      // Noop.
+      // During hydration, the useId algorithm needs to know which fibers are
+      // part of a list of children (arrays, iterators).
+      newFiber.flags |= Forked;
       return lastPlacedIndex;
     }
     const current = newFiber.alternate;
@@ -410,8 +411,7 @@ function ChildReconciler(shouldTrackSideEffects) {
         // We need to do this after the Hot Reloading check above,
         // because hot reloading has different semantics than prod because
         // it doesn't resuspend. So we can't let the call below suspend.
-        (enableLazyElements &&
-          typeof elementType === 'object' &&
+        (typeof elementType === 'object' &&
           elementType !== null &&
           elementType.$$typeof === REACT_LAZY_TYPE &&
           resolveLazy(elementType) === current.type)
@@ -488,7 +488,10 @@ function ChildReconciler(shouldTrackSideEffects) {
     newChild: any,
     lanes: Lanes,
   ): Fiber | null {
-    if (typeof newChild === 'string' || typeof newChild === 'number') {
+    if (
+      (typeof newChild === 'string' && newChild !== '') ||
+      typeof newChild === 'number'
+    ) {
       // Text nodes don't have keys. If the previous node is implicitly keyed
       // we can continue to replace it without aborting even if it is not a text
       // node.
@@ -523,11 +526,9 @@ function ChildReconciler(shouldTrackSideEffects) {
           return created;
         }
         case REACT_LAZY_TYPE: {
-          if (enableLazyElements) {
-            const payload = newChild._payload;
-            const init = newChild._init;
-            return createChild(returnFiber, init(payload), lanes);
-          }
+          const payload = newChild._payload;
+          const init = newChild._init;
+          return createChild(returnFiber, init(payload), lanes);
         }
       }
 
@@ -564,7 +565,10 @@ function ChildReconciler(shouldTrackSideEffects) {
 
     const key = oldFiber !== null ? oldFiber.key : null;
 
-    if (typeof newChild === 'string' || typeof newChild === 'number') {
+    if (
+      (typeof newChild === 'string' && newChild !== '') ||
+      typeof newChild === 'number'
+    ) {
       // Text nodes don't have keys. If the previous node is implicitly keyed
       // we can continue to replace it without aborting even if it is not a text
       // node.
@@ -591,11 +595,9 @@ function ChildReconciler(shouldTrackSideEffects) {
           }
         }
         case REACT_LAZY_TYPE: {
-          if (enableLazyElements) {
-            const payload = newChild._payload;
-            const init = newChild._init;
-            return updateSlot(returnFiber, oldFiber, init(payload), lanes);
-          }
+          const payload = newChild._payload;
+          const init = newChild._init;
+          return updateSlot(returnFiber, oldFiber, init(payload), lanes);
         }
       }
 
@@ -626,7 +628,10 @@ function ChildReconciler(shouldTrackSideEffects) {
     newChild: any,
     lanes: Lanes,
   ): Fiber | null {
-    if (typeof newChild === 'string' || typeof newChild === 'number') {
+    if (
+      (typeof newChild === 'string' && newChild !== '') ||
+      typeof newChild === 'number'
+    ) {
       // Text nodes don't have keys, so we neither have to check the old nor
       // new node for the key. If both are text nodes, they match.
       const matchedFiber = existingChildren.get(newIdx) || null;
@@ -650,17 +655,15 @@ function ChildReconciler(shouldTrackSideEffects) {
           return updatePortal(returnFiber, matchedFiber, newChild, lanes);
         }
         case REACT_LAZY_TYPE:
-          if (enableLazyElements) {
-            const payload = newChild._payload;
-            const init = newChild._init;
-            return updateFromMap(
-              existingChildren,
-              returnFiber,
-              newIdx,
-              init(payload),
-              lanes,
-            );
-          }
+          const payload = newChild._payload;
+          const init = newChild._init;
+          return updateFromMap(
+            existingChildren,
+            returnFiber,
+            newIdx,
+            init(payload),
+            lanes,
+          );
       }
 
       if (isArray(newChild) || getIteratorFn(newChild)) {
@@ -719,14 +722,10 @@ function ChildReconciler(shouldTrackSideEffects) {
           );
           break;
         case REACT_LAZY_TYPE:
-          if (enableLazyElements) {
-            const payload = child._payload;
-            const init = (child._init: any);
-            warnOnInvalidKey(init(payload), knownKeys, returnFiber);
-            break;
-          }
-        // We intentionally fallthrough here if enableLazyElements is not on.
-        // eslint-disable-next-lined no-fallthrough
+          const payload = child._payload;
+          const init = (child._init: any);
+          warnOnInvalidKey(init(payload), knownKeys, returnFiber);
+          break;
         default:
           break;
       }
@@ -823,6 +822,10 @@ function ChildReconciler(shouldTrackSideEffects) {
     if (newIdx === newChildren.length) {
       // We've reached the end of the new children. We can delete the rest.
       deleteRemainingChildren(returnFiber, oldFiber);
+      if (getIsHydrating()) {
+        const numberOfForks = newIdx;
+        pushTreeFork(returnFiber, numberOfForks);
+      }
       return resultingFirstChild;
     }
 
@@ -842,6 +845,10 @@ function ChildReconciler(shouldTrackSideEffects) {
           previousNewFiber.sibling = newFiber;
         }
         previousNewFiber = newFiber;
+      }
+      if (getIsHydrating()) {
+        const numberOfForks = newIdx;
+        pushTreeFork(returnFiber, numberOfForks);
       }
       return resultingFirstChild;
     }
@@ -886,6 +893,10 @@ function ChildReconciler(shouldTrackSideEffects) {
       existingChildren.forEach(child => deleteChild(returnFiber, child));
     }
 
+    if (getIsHydrating()) {
+      const numberOfForks = newIdx;
+      pushTreeFork(returnFiber, numberOfForks);
+    }
     return resultingFirstChild;
   }
 
@@ -1013,6 +1024,10 @@ function ChildReconciler(shouldTrackSideEffects) {
     if (step.done) {
       // We've reached the end of the new children. We can delete the rest.
       deleteRemainingChildren(returnFiber, oldFiber);
+      if (getIsHydrating()) {
+        const numberOfForks = newIdx;
+        pushTreeFork(returnFiber, numberOfForks);
+      }
       return resultingFirstChild;
     }
 
@@ -1032,6 +1047,10 @@ function ChildReconciler(shouldTrackSideEffects) {
           previousNewFiber.sibling = newFiber;
         }
         previousNewFiber = newFiber;
+      }
+      if (getIsHydrating()) {
+        const numberOfForks = newIdx;
+        pushTreeFork(returnFiber, numberOfForks);
       }
       return resultingFirstChild;
     }
@@ -1076,6 +1095,10 @@ function ChildReconciler(shouldTrackSideEffects) {
       existingChildren.forEach(child => deleteChild(returnFiber, child));
     }
 
+    if (getIsHydrating()) {
+      const numberOfForks = newIdx;
+      pushTreeFork(returnFiber, numberOfForks);
+    }
     return resultingFirstChild;
   }
 
@@ -1138,8 +1161,7 @@ function ChildReconciler(shouldTrackSideEffects) {
             // We need to do this after the Hot Reloading check above,
             // because hot reloading has different semantics than prod because
             // it doesn't resuspend. So we can't let the call below suspend.
-            (enableLazyElements &&
-              typeof elementType === 'object' &&
+            (typeof elementType === 'object' &&
               elementType !== null &&
               elementType.$$typeof === REACT_LAZY_TYPE &&
               resolveLazy(elementType) === child.type)
@@ -1265,17 +1287,15 @@ function ChildReconciler(shouldTrackSideEffects) {
             ),
           );
         case REACT_LAZY_TYPE:
-          if (enableLazyElements) {
-            const payload = newChild._payload;
-            const init = newChild._init;
-            // TODO: This function is supposed to be non-recursive.
-            return reconcileChildFibers(
-              returnFiber,
-              currentFirstChild,
-              init(payload),
-              lanes,
-            );
-          }
+          const payload = newChild._payload;
+          const init = newChild._init;
+          // TODO: This function is supposed to be non-recursive.
+          return reconcileChildFibers(
+            returnFiber,
+            currentFirstChild,
+            init(payload),
+            lanes,
+          );
       }
 
       if (isArray(newChild)) {
@@ -1299,7 +1319,10 @@ function ChildReconciler(shouldTrackSideEffects) {
       throwOnInvalidObjectType(returnFiber, newChild);
     }
 
-    if (typeof newChild === 'string' || typeof newChild === 'number') {
+    if (
+      (typeof newChild === 'string' && newChild !== '') ||
+      typeof newChild === 'number'
+    ) {
       return placeSingleChild(
         reconcileSingleTextNode(
           returnFiber,

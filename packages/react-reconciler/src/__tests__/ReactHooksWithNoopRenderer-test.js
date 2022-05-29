@@ -34,6 +34,7 @@ let forwardRef;
 let memo;
 let act;
 let ContinuousEventPriority;
+let SuspenseList;
 
 describe('ReactHooksWithNoopRenderer', () => {
   beforeEach(() => {
@@ -60,6 +61,9 @@ describe('ReactHooksWithNoopRenderer', () => {
     Suspense = React.Suspense;
     ContinuousEventPriority = require('react-reconciler/constants')
       .ContinuousEventPriority;
+    if (gate(flags => flags.enableSuspenseList)) {
+      SuspenseList = React.SuspenseList;
+    }
 
     textCache = new Map();
 
@@ -1184,7 +1188,7 @@ describe('ReactHooksWithNoopRenderer', () => {
         ]);
       });
 
-      // This update is exists to test an internal implementation detail:
+      // This update exists to test an internal implementation detail:
       // Effects without updating dependencies lose their layout/passive tag during an update.
       act(() => {
         ReactNoop.render(<Child bar={1} foo={2} />, () =>
@@ -3086,6 +3090,87 @@ describe('ReactHooksWithNoopRenderer', () => {
         }),
       ).toThrow('is not a function');
     });
+
+    it('warns when setState is called from insertion effect setup', () => {
+      function App(props) {
+        const [, setX] = useState(0);
+        useInsertionEffect(() => {
+          setX(1);
+          if (props.throw) {
+            throw Error('No');
+          }
+        }, [props.throw]);
+        return null;
+      }
+
+      const root = ReactNoop.createRoot();
+      expect(() =>
+        act(() => {
+          root.render(<App />);
+        }),
+      ).toErrorDev(['Warning: useInsertionEffect must not schedule updates.']);
+
+      expect(() => {
+        act(() => {
+          root.render(<App throw={true} />);
+        });
+      }).toThrow('No');
+
+      // Should not warn for regular effects after throw.
+      function NotInsertion() {
+        const [, setX] = useState(0);
+        useEffect(() => {
+          setX(1);
+        }, []);
+        return null;
+      }
+      act(() => {
+        root.render(<NotInsertion />);
+      });
+    });
+
+    it('warns when setState is called from insertion effect cleanup', () => {
+      function App(props) {
+        const [, setX] = useState(0);
+        useInsertionEffect(() => {
+          if (props.throw) {
+            throw Error('No');
+          }
+          return () => {
+            setX(1);
+          };
+        }, [props.throw, props.foo]);
+        return null;
+      }
+
+      const root = ReactNoop.createRoot();
+      act(() => {
+        root.render(<App foo="hello" />);
+      });
+      expect(() => {
+        act(() => {
+          root.render(<App foo="goodbye" />);
+        });
+      }).toErrorDev(['Warning: useInsertionEffect must not schedule updates.']);
+
+      expect(() => {
+        act(() => {
+          root.render(<App throw={true} />);
+        });
+      }).toThrow('No');
+
+      // Should not warn for regular effects after throw.
+      function NotInsertion() {
+        const [, setX] = useState(0);
+        useEffect(() => {
+          setX(1);
+        }, []);
+        return null;
+      }
+      act(() => {
+        root.render(<NotInsertion />);
+      });
+    });
   });
 
   describe('useLayoutEffect', () => {
@@ -4291,9 +4376,8 @@ describe('ReactHooksWithNoopRenderer', () => {
     ]);
   });
 
+  // @gate enableSuspenseList
   it('regression: SuspenseList causes unmounts to be dropped on deletion', async () => {
-    const SuspenseList = React.SuspenseList;
-
     function Row({label}) {
       useEffect(() => {
         Scheduler.unstable_yieldValue('Mount ' + label);

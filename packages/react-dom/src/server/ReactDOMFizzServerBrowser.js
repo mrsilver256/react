@@ -32,54 +32,74 @@ type Options = {|
   bootstrapModules?: Array<string>,
   progressiveChunkSize?: number,
   signal?: AbortSignal,
-  onCompleteShell?: () => void,
-  onCompleteAll?: () => void,
   onError?: (error: mixed) => void,
 |};
+
+// TODO: Move to sub-classing ReadableStream.
+type ReactDOMServerReadableStream = ReadableStream & {
+  allReady: Promise<void>,
+};
 
 function renderToReadableStream(
   children: ReactNodeList,
   options?: Options,
-): ReadableStream {
-  const request = createRequest(
-    children,
-    createResponseState(
-      options ? options.identifierPrefix : undefined,
-      options ? options.nonce : undefined,
-      options ? options.bootstrapScriptContent : undefined,
-      options ? options.bootstrapScripts : undefined,
-      options ? options.bootstrapModules : undefined,
-    ),
-    createRootFormatContext(options ? options.namespaceURI : undefined),
-    options ? options.progressiveChunkSize : undefined,
-    options ? options.onError : undefined,
-    options ? options.onCompleteAll : undefined,
-    options ? options.onCompleteShell : undefined,
-  );
-  if (options && options.signal) {
-    const signal = options.signal;
-    const listener = () => {
-      abort(request);
-      signal.removeEventListener('abort', listener);
-    };
-    signal.addEventListener('abort', listener);
-  }
-  const stream = new ReadableStream({
-    start(controller) {
-      startWork(request);
-    },
-    pull(controller) {
-      // Pull is called immediately even if the stream is not passed to anything.
-      // That's buffering too early. We want to start buffering once the stream
-      // is actually used by something so we can give it the best result possible
-      // at that point.
-      if (stream.locked) {
-        startFlowing(request, controller);
-      }
-    },
-    cancel(reason) {},
+): Promise<ReactDOMServerReadableStream> {
+  return new Promise((resolve, reject) => {
+    let onFatalError;
+    let onAllReady;
+    const allReady = new Promise((res, rej) => {
+      onAllReady = res;
+      onFatalError = rej;
+    });
+
+    function onShellReady() {
+      const stream: ReactDOMServerReadableStream = (new ReadableStream({
+        type: 'bytes',
+        pull(controller) {
+          startFlowing(request, controller);
+        },
+        cancel(reason) {
+          abort(request);
+        },
+      }): any);
+      // TODO: Move to sub-classing ReadableStream.
+      stream.allReady = allReady;
+      resolve(stream);
+    }
+    function onShellError(error: mixed) {
+      // If the shell errors the caller of `renderToReadableStream` won't have access to `allReady`.
+      // However, `allReady` will be rejected by `onFatalError` as well.
+      // So we need to catch the duplicate, uncatchable fatal error in `allReady` to prevent a `UnhandledPromiseRejection`.
+      allReady.catch(() => {});
+      reject(error);
+    }
+    const request = createRequest(
+      children,
+      createResponseState(
+        options ? options.identifierPrefix : undefined,
+        options ? options.nonce : undefined,
+        options ? options.bootstrapScriptContent : undefined,
+        options ? options.bootstrapScripts : undefined,
+        options ? options.bootstrapModules : undefined,
+      ),
+      createRootFormatContext(options ? options.namespaceURI : undefined),
+      options ? options.progressiveChunkSize : undefined,
+      options ? options.onError : undefined,
+      onAllReady,
+      onShellReady,
+      onShellError,
+      onFatalError,
+    );
+    if (options && options.signal) {
+      const signal = options.signal;
+      const listener = () => {
+        abort(request);
+        signal.removeEventListener('abort', listener);
+      };
+      signal.addEventListener('abort', listener);
+    }
+    startWork(request);
   });
-  return stream;
 }
 
 export {renderToReadableStream, ReactVersion as version};

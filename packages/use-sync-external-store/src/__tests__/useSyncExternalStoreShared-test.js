@@ -10,9 +10,10 @@
 'use strict';
 
 let useSyncExternalStore;
-let useSyncExternalStoreExtra;
+let useSyncExternalStoreWithSelector;
 let React;
 let ReactDOM;
+let ReactDOMClient;
 let Scheduler;
 let act;
 let useState;
@@ -25,11 +26,7 @@ describe('Shared useSyncExternalStore behavior (shim and built-in)', () => {
   beforeEach(() => {
     jest.resetModules();
 
-    // Remove the built-in API from the React exports to force the package to
-    // use the shim.
-    if (!gate(flags => flags.supportsNativeUseSyncExternalStore)) {
-      // and the non-variant tests for the shim.
-      //
+    if (gate(flags => flags.enableUseSyncExternalStoreShim)) {
       // Remove useSyncExternalStore from the React imports so that we use the
       // shim instead. Also removing startTransition, since we use that to
       // detect outdated 18 alphas that don't yet include useSyncExternalStore.
@@ -42,8 +39,6 @@ describe('Shared useSyncExternalStore behavior (shim and built-in)', () => {
           startTransition: _,
           // eslint-disable-next-line no-unused-vars
           useSyncExternalStore: __,
-          // eslint-disable-next-line no-unused-vars
-          unstable_useSyncExternalStore: ___,
           ...otherExports
         } = jest.requireActual('react');
         return otherExports;
@@ -52,6 +47,7 @@ describe('Shared useSyncExternalStore behavior (shim and built-in)', () => {
 
     React = require('react');
     ReactDOM = require('react-dom');
+    ReactDOMClient = require('react-dom/client');
     Scheduler = require('scheduler');
     useState = React.useState;
     useEffect = React.useEffect;
@@ -64,10 +60,21 @@ describe('Shared useSyncExternalStore behavior (shim and built-in)', () => {
     // in both concurrent and legacy mode, I'm adding batching here.
     act = cb => internalAct(() => ReactDOM.unstable_batchedUpdates(cb));
 
-    useSyncExternalStore = require('use-sync-external-store')
+    if (gate(flags => flags.source)) {
+      // The `shim/with-selector` module composes the main
+      // `use-sync-external-store` entrypoint. In the compiled artifacts, this
+      // is resolved to the `shim` implementation by our build config, but when
+      // running the tests against the source files, we need to tell Jest how to
+      // resolve it. Because this is a source module, this mock has no affect on
+      // the build tests.
+      jest.mock('use-sync-external-store/src/useSyncExternalStore', () =>
+        jest.requireActual('use-sync-external-store/shim'),
+      );
+    }
+    useSyncExternalStore = require('use-sync-external-store/shim')
       .useSyncExternalStore;
-    useSyncExternalStoreExtra = require('use-sync-external-store/extra')
-      .useSyncExternalStoreExtra;
+    useSyncExternalStoreWithSelector = require('use-sync-external-store/shim/with-selector')
+      .useSyncExternalStoreWithSelector;
   });
 
   function Text({text}) {
@@ -78,14 +85,14 @@ describe('Shared useSyncExternalStore behavior (shim and built-in)', () => {
   function createRoot(container) {
     // This wrapper function exists so we can test both legacy roots and
     // concurrent roots.
-    if (gate(flags => flags.supportsNativeUseSyncExternalStore)) {
+    if (gate(flags => !flags.enableUseSyncExternalStoreShim)) {
       // The native implementation only exists in 18+, so we test using
       // concurrent mode. To test the legacy root behavior in the native
       // implementation (which is supported in the sense that it needs to have
       // the correct behavior, despite the fact that the legacy root API
       // triggers a warning in 18), write a test that uses
       // createLegacyRoot directly.
-      return ReactDOM.createRoot(container);
+      return ReactDOMClient.createRoot(container);
     } else {
       ReactDOM.render(null, container);
       return {
@@ -265,7 +272,7 @@ describe('Shared useSyncExternalStore behavior (shim and built-in)', () => {
 
   // In React 18, you can't observe in between a sync render and its
   // passive effects, so this is only relevant to legacy roots
-  // @gate !supportsNativeUseSyncExternalStore
+  // @gate enableUseSyncExternalStoreShim
   test(
     "compares to current state before bailing out, even when there's a " +
       'mutation in between the sync and passive effects',
@@ -547,7 +554,7 @@ describe('Shared useSyncExternalStore behavior (shim and built-in)', () => {
     await act(() => {
       store.set({value: 1, throwInGetSnapshot: true, throwInIsEqual: false});
     });
-    if (gate(flags => flags.supportsNativeUseSyncExternalStore)) {
+    if (gate(flags => !flags.enableUseSyncExternalStoreShim)) {
       expect(Scheduler).toHaveYielded([
         'Error in getSnapshot',
         // In a concurrent root, React renders a second time to attempt to
@@ -582,6 +589,33 @@ describe('Shared useSyncExternalStore behavior (shim and built-in)', () => {
     );
   });
 
+  test('getSnapshot can return NaN without infinite loop warning', async () => {
+    const store = createExternalStore('not a number');
+
+    function App() {
+      const value = useSyncExternalStore(store.subscribe, () =>
+        parseInt(store.getState(), 10),
+      );
+      return <Text text={value} />;
+    }
+
+    const container = document.createElement('div');
+    const root = createRoot(container);
+
+    // Initial render that reads a snapshot of NaN. This is OK because we use
+    // Object.is algorithm to compare values.
+    await act(() => root.render(<App />));
+    expect(container.textContent).toEqual('NaN');
+
+    // Update to real number
+    await act(() => store.set(123));
+    expect(container.textContent).toEqual('123');
+
+    // Update back to NaN
+    await act(() => store.set('not a number'));
+    expect(container.textContent).toEqual('NaN');
+  });
+
   describe('extra features implemented in user-space', () => {
     // The selector implementation uses the lazy ref initialization pattern
     // @gate !(enableUseRefAccessWarning && __DEV__)
@@ -595,7 +629,7 @@ describe('Shared useSyncExternalStore behavior (shim and built-in)', () => {
 
       function App() {
         Scheduler.unstable_yieldValue('App');
-        const a = useSyncExternalStoreExtra(
+        const a = useSyncExternalStoreWithSelector(
           store.subscribe,
           store.getState,
           null,
@@ -632,7 +666,7 @@ describe('Shared useSyncExternalStore behavior (shim and built-in)', () => {
       const store = createExternalStore({a: 0, b: 0});
 
       function A() {
-        const {a} = useSyncExternalStoreExtra(
+        const {a} = useSyncExternalStoreWithSelector(
           store.subscribe,
           store.getState,
           null,
@@ -642,7 +676,7 @@ describe('Shared useSyncExternalStore behavior (shim and built-in)', () => {
         return <Text text={'A' + a} />;
       }
       function B() {
-        const {b} = useSyncExternalStoreExtra(
+        const {b} = useSyncExternalStoreWithSelector(
           store.subscribe,
           store.getState,
           null,
@@ -711,9 +745,9 @@ describe('Shared useSyncExternalStore behavior (shim and built-in)', () => {
       container.innerHTML = '<div>server</div>';
       const serverRenderedDiv = container.getElementsByTagName('div')[0];
 
-      if (gate(flags => flags.supportsNativeUseSyncExternalStore)) {
+      if (gate(flags => !flags.enableUseSyncExternalStoreShim)) {
         act(() => {
-          ReactDOM.hydrateRoot(container, <App />);
+          ReactDOMClient.hydrateRoot(container, <App />);
         });
         expect(Scheduler).toHaveYielded([
           // First it hydrates the server rendered HTML
@@ -738,6 +772,33 @@ describe('Shared useSyncExternalStore behavior (shim and built-in)', () => {
       expect(container.textContent).toEqual('client');
       expect(ref.current).toEqual(serverRenderedDiv);
     });
+  });
+
+  test('regression test for #23150', async () => {
+    const store = createExternalStore('Initial');
+
+    function App() {
+      const text = useSyncExternalStore(store.subscribe, store.getState);
+      const [derivedText, setDerivedText] = useState(text);
+      useEffect(() => {}, []);
+      if (derivedText !== text.toUpperCase()) {
+        setDerivedText(text.toUpperCase());
+      }
+      return <Text text={derivedText} />;
+    }
+
+    const container = document.createElement('div');
+    const root = createRoot(container);
+    await act(() => root.render(<App />));
+
+    expect(Scheduler).toHaveYielded(['INITIAL']);
+    expect(container.textContent).toEqual('INITIAL');
+
+    await act(() => {
+      store.set('Updated');
+    });
+    expect(Scheduler).toHaveYielded(['UPDATED']);
+    expect(container.textContent).toEqual('UPDATED');
   });
 
   // The selector implementation uses the lazy ref initialization pattern
@@ -774,7 +835,7 @@ describe('Shared useSyncExternalStore behavior (shim and built-in)', () => {
         Scheduler.unstable_yieldValue('Inline selector');
         return [...state.items, 'C'];
       };
-      const items = useSyncExternalStoreExtra(
+      const items = useSyncExternalStoreWithSelector(
         store.subscribe,
         store.getState,
         null,
@@ -842,7 +903,7 @@ describe('Shared useSyncExternalStore behavior (shim and built-in)', () => {
       const selector = state => state.a.toUpperCase();
 
       function App() {
-        const a = useSyncExternalStoreExtra(
+        const a = useSyncExternalStoreWithSelector(
           store.subscribe,
           store.getState,
           null,
@@ -877,7 +938,7 @@ describe('Shared useSyncExternalStore behavior (shim and built-in)', () => {
       const isEqual = (left, right) => left.a.trim() === right.a.trim();
 
       function App() {
-        const a = useSyncExternalStoreExtra(
+        const a = useSyncExternalStoreWithSelector(
           store.subscribe,
           store.getState,
           null,

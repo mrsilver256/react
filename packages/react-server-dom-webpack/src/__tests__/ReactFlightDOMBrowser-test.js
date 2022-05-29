@@ -23,7 +23,8 @@ global.__webpack_require__ = function(id) {
 
 let act;
 let React;
-let ReactDOM;
+let ReactDOMClient;
+let ReactDOMServer;
 let ReactServerDOMWriter;
 let ReactServerDOMReader;
 
@@ -34,7 +35,8 @@ describe('ReactFlightDOMBrowser', () => {
     webpackMap = {};
     act = require('jest-react').act;
     React = require('react');
-    ReactDOM = require('react-dom');
+    ReactDOMClient = require('react-dom/client');
+    ReactDOMServer = require('react-dom/server.browser');
     ReactServerDOMWriter = require('react-server-dom-webpack/writer.browser.server');
     ReactServerDOMReader = require('react-server-dom-webpack');
   });
@@ -67,6 +69,43 @@ describe('ReactFlightDOMBrowser', () => {
         }
       }
     }
+  }
+
+  async function readResult(stream) {
+    const reader = stream.getReader();
+    let result = '';
+    while (true) {
+      const {done, value} = await reader.read();
+      if (done) {
+        return result;
+      }
+      result += Buffer.from(value).toString('utf8');
+    }
+  }
+
+  function makeDelayedText(Model) {
+    let error, _resolve, _reject;
+    let promise = new Promise((resolve, reject) => {
+      _resolve = () => {
+        promise = null;
+        resolve();
+      };
+      _reject = e => {
+        error = e;
+        promise = null;
+        reject(e);
+      };
+    });
+    function DelayedText({children}, data) {
+      if (promise) {
+        throw promise;
+      }
+      if (error) {
+        throw error;
+      }
+      return <Model>{children}</Model>;
+    }
+    return [DelayedText, _resolve, _reject];
   }
 
   it('should resolve HTML using W3C streams', async () => {
@@ -174,36 +213,11 @@ describe('ReactFlightDOMBrowser', () => {
       return children;
     }
 
-    function makeDelayedText() {
-      let error, _resolve, _reject;
-      let promise = new Promise((resolve, reject) => {
-        _resolve = () => {
-          promise = null;
-          resolve();
-        };
-        _reject = e => {
-          error = e;
-          promise = null;
-          reject(e);
-        };
-      });
-      function DelayedText({children}, data) {
-        if (promise) {
-          throw promise;
-        }
-        if (error) {
-          throw error;
-        }
-        return <Text>{children}</Text>;
-      }
-      return [DelayedText, _resolve, _reject];
-    }
-
-    const [Friends, resolveFriends] = makeDelayedText();
-    const [Name, resolveName] = makeDelayedText();
-    const [Posts, resolvePosts] = makeDelayedText();
-    const [Photos, resolvePhotos] = makeDelayedText();
-    const [Games, , rejectGames] = makeDelayedText();
+    const [Friends, resolveFriends] = makeDelayedText(Text);
+    const [Name, resolveName] = makeDelayedText(Text);
+    const [Posts, resolvePosts] = makeDelayedText(Text);
+    const [Photos, resolvePhotos] = makeDelayedText(Text);
+    const [Games, , rejectGames] = makeDelayedText(Text);
 
     // View
     function ProfileDetails({avatar}) {
@@ -270,7 +284,7 @@ describe('ReactFlightDOMBrowser', () => {
     const response = ReactServerDOMReader.createFromReadableStream(stream);
 
     const container = document.createElement('div');
-    const root = ReactDOM.createRoot(container);
+    const root = ReactDOMClient.createRoot(container);
     await act(async () => {
       root.render(
         <Suspense fallback={<p>(loading)</p>}>
@@ -339,5 +353,163 @@ describe('ReactFlightDOMBrowser', () => {
     );
 
     expect(reportedErrors).toEqual([]);
+  });
+
+  it('should close the stream upon completion when rendering to W3C streams', async () => {
+    const {Suspense} = React;
+
+    // Model
+    function Text({children}) {
+      return children;
+    }
+
+    const [Friends, resolveFriends] = makeDelayedText(Text);
+    const [Name, resolveName] = makeDelayedText(Text);
+    const [Posts, resolvePosts] = makeDelayedText(Text);
+    const [Photos, resolvePhotos] = makeDelayedText(Text);
+
+    // View
+    function ProfileDetails({avatar}) {
+      return (
+        <div>
+          <Name>:name:</Name>
+          {avatar}
+        </div>
+      );
+    }
+    function ProfileSidebar({friends}) {
+      return (
+        <div>
+          <Photos>:photos:</Photos>
+          {friends}
+        </div>
+      );
+    }
+    function ProfilePosts({posts}) {
+      return <div>{posts}</div>;
+    }
+
+    function ProfileContent() {
+      return (
+        <Suspense fallback="(loading everything)">
+          <ProfileDetails avatar={<Text>:avatar:</Text>} />
+          <Suspense fallback={<p>(loading sidebar)</p>}>
+            <ProfileSidebar friends={<Friends>:friends:</Friends>} />
+          </Suspense>
+          <Suspense fallback={<p>(loading posts)</p>}>
+            <ProfilePosts posts={<Posts>:posts:</Posts>} />
+          </Suspense>
+        </Suspense>
+      );
+    }
+
+    const model = {
+      rootContent: <ProfileContent />,
+    };
+
+    const stream = ReactServerDOMWriter.renderToReadableStream(
+      model,
+      webpackMap,
+    );
+
+    const reader = stream.getReader();
+    const decoder = new TextDecoder();
+
+    let flightResponse = '';
+    let isDone = false;
+
+    reader.read().then(function progress({done, value}) {
+      if (done) {
+        isDone = true;
+        return;
+      }
+
+      flightResponse += decoder.decode(value);
+
+      return reader.read().then(progress);
+    });
+
+    // Advance time enough to trigger a nested fallback.
+    jest.advanceTimersByTime(500);
+
+    await act(async () => {});
+
+    expect(flightResponse).toContain('(loading everything)');
+    expect(flightResponse).toContain('(loading sidebar)');
+    expect(flightResponse).toContain('(loading posts)');
+    expect(flightResponse).not.toContain(':friends:');
+    expect(flightResponse).not.toContain(':name:');
+
+    await act(async () => {
+      resolveFriends();
+    });
+
+    expect(flightResponse).toContain(':friends:');
+
+    await act(async () => {
+      resolveName();
+    });
+
+    expect(flightResponse).toContain(':name:');
+
+    await act(async () => {
+      resolvePhotos();
+    });
+
+    expect(flightResponse).toContain(':photos:');
+
+    await act(async () => {
+      resolvePosts();
+    });
+
+    expect(flightResponse).toContain(':posts:');
+
+    // Final pending chunk is written; stream should be closed.
+    expect(isDone).toBeTruthy();
+  });
+
+  it('should allow an alternative module mapping to be used for SSR', async () => {
+    function ClientComponent() {
+      return <span>Client Component</span>;
+    }
+    // The Client build may not have the same IDs as the Server bundles for the same
+    // component.
+    const ClientComponentOnTheClient = moduleReference(ClientComponent);
+    const ClientComponentOnTheServer = moduleReference(ClientComponent);
+
+    // In the SSR bundle this module won't exist. We simulate this by deleting it.
+    const clientId = webpackMap[ClientComponentOnTheClient.filepath].default.id;
+    delete webpackModules[clientId];
+
+    // Instead, we have to provide a translation from the client meta data to the SSR
+    // meta data.
+    const ssrMetaData = webpackMap[ClientComponentOnTheServer.filepath].default;
+    const translationMap = {
+      [clientId]: {
+        d: ssrMetaData,
+      },
+    };
+
+    function App() {
+      return <ClientComponentOnTheClient />;
+    }
+
+    const stream = ReactServerDOMWriter.renderToReadableStream(
+      <App />,
+      webpackMap,
+    );
+    const response = ReactServerDOMReader.createFromReadableStream(stream, {
+      moduleMap: translationMap,
+    });
+
+    function ClientRoot() {
+      return response.readRoot();
+    }
+
+    const ssrStream = await ReactDOMServer.renderToReadableStream(
+      <ClientRoot />,
+    );
+    const result = await readResult(ssrStream);
+    expect(result).toEqual('<span>Client Component</span>');
   });
 });
